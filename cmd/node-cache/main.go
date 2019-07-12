@@ -132,9 +132,12 @@ func (c *cacheApp) setupNetworking() error {
 	}
 	if c.setupIptables {
 		for _, rule := range c.iptablesRules {
-			_, err = c.iptables.EnsureRule(utiliptables.Prepend, rule.table, rule.chain, rule.args...)
-			if err != nil {
-				return err
+			exists := false
+			for exists == false {
+				exists, err = c.iptables.EnsureRule(utiliptables.Prepend, rule.table, rule.chain, rule.args...)
+				if err != nil && !isLockedErr(err) {
+					return err
+				}
 			}
 		}
 	} else {
