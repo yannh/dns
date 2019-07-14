@@ -45,11 +45,6 @@ type iptablesRule struct {
 	args  []string
 }
 
-type cacheApp struct {
-	params        configParams
-	netifHandle   *netif.NetifManager
-}
-
 func isLockedErr(err error) bool {
 	if err == nil {
 		return false
@@ -191,11 +186,11 @@ func run() {
 	}
 
 	ifm := netif.NewNetifManager(cp.localIPs)
-	caddy.OnProcessExit = append(caddy.OnProcessExit, func() {teardownNetworking(ifm, cp)})
+	caddy.OnProcessExit = append(caddy.OnProcessExit, func() { teardownNetworking(ifm, cp) })
 
 	initMetrics(cp.metricsListenAddress)
 
-	retryInterval := 100*time.Millisecond
+	retryInterval := 100 * time.Millisecond
 	err = ensureNetworkSetup(ifm, cp)
 	for isLockedErr(err) {
 		clog.Errorf("Error setting up networking: %s - retrying...", err)
