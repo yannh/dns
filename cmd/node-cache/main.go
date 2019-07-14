@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/mholt/caddy"
 
 	"flag"
 	"net"
@@ -21,7 +22,7 @@ import (
 	_ "github.com/coredns/coredns/plugin/metrics"
 	clog "github.com/coredns/coredns/plugin/pkg/log"
 	_ "github.com/coredns/coredns/plugin/reload"
-	"github.com/yannh/dns/pkg/netif"
+	"k8s.io/dns/pkg/netif"
 	"k8s.io/kubernetes/pkg/util/dbus"
 	utilexec "k8s.io/kubernetes/pkg/util/exec"
 	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
@@ -45,13 +46,14 @@ type iptablesRule struct {
 }
 
 type cacheApp struct {
-	iptables      utiliptables.Interface
-	iptablesRules []iptablesRule
 	params        configParams
 	netifHandle   *netif.NetifManager
 }
 
 func isLockedErr(err error) bool {
+	if err == nil {
+		return false
+	}
 	return strings.Contains(err.Error(), "holding the xtables lock")
 }
 
@@ -87,18 +89,24 @@ func iptablesRules(localIPStr, localPort string) []iptablesRule {
 	return r
 }
 
-func (c *cacheApp) teardownNetworking() error {
+func teardownNetworking(ifm *netif.NetifManager, params configParams) error {
 	clog.Infof("Tearing down")
-	if err := c.netifHandle.RemoveDummyDevice(c.params.interfaceName); err != nil {
-		clog.Infof("Failed removing interface %s", c.params.interfaceName)
+	if err := ifm.RemoveDummyDevice(params.interfaceName); err != nil {
+		clog.Infof("Failed removing interface %s", params.interfaceName)
 	}
 
-	if c.params.setupIptables {
-		for _, rule := range c.iptablesRules {
-			err := c.iptables.DeleteRule(rule.table, rule.chain, rule.args...)
+	if params.setupIptables {
+		iptables := utiliptables.New(utilexec.New(), dbus.New(), utiliptables.ProtocolIpv4)
+		for _, rule := range iptablesRules(params.localIPStr, params.localPort) {
+			clog.Infof("Deleting rule %+v\n", rule)
+
+			err := iptables.DeleteRule(rule.table, rule.chain, rule.args...)
 			for isLockedErr(err) {
-				err = c.iptables.DeleteRule(rule.table, rule.chain, rule.args...)
-				time.Sleep(50 * time.Millisecond)
+				err = iptables.DeleteRule(rule.table, rule.chain, rule.args...)
+				time.Sleep(100 * time.Millisecond)
+			}
+			if err != nil {
+				return err
 			}
 		}
 	}
@@ -106,8 +114,8 @@ func (c *cacheApp) teardownNetworking() error {
 	return nil
 }
 
-func parseAndValidateFlags() (*configParams, error) {
-	var cp = &configParams{}
+func parseAndValidateFlags() (configParams, error) {
+	var cp = configParams{}
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
@@ -124,40 +132,40 @@ func parseAndValidateFlags() (*configParams, error) {
 	for _, ipstr := range strings.Split(cp.localIPStr, ",") {
 		newIP := net.ParseIP(ipstr)
 		if newIP == nil {
-			return nil, fmt.Errorf("Invalid localip specified - %q", ipstr)
+			return cp, fmt.Errorf("Invalid localip specified - %q", ipstr)
 		}
 		cp.localIPs = append(cp.localIPs, newIP)
 	}
 
 	// lookup specified dns port
 	if f := flag.Lookup("dns.port"); f == nil {
-		return nil, fmt.Errorf("Failed to lookup \"dns.port\" parameter")
+		cp.localPort = "53"
 	} else {
 		cp.localPort = f.Value.String()
 	}
 	if _, err := strconv.Atoi(cp.localPort); err != nil {
-		return nil, fmt.Errorf("Invalid port specified - %q", cp.localPort)
+		return cp, fmt.Errorf("Invalid port specified - %q", cp.localPort)
 	}
 	return cp, nil
 }
 
-func (c *cacheApp) ensureNetworkSetup() error {
-	exists, err := c.netifHandle.EnsureDummyDevice(c.params.interfaceName)
+func ensureNetworkSetup(ifm *netif.NetifManager, params configParams) error {
+	exists, err := ifm.EnsureDummyDevice(params.interfaceName)
 	if err != nil {
-		clog.Errorf("Error ensuring dummy interface %s is present - %s", c.params.interfaceName, err)
+		clog.Errorf("Error ensuring dummy interface %s is present - %s", params.interfaceName, err)
 		setupErrCount.WithLabelValues("interface_check").Inc()
 		return err
 	}
 
 	if !exists {
-		clog.Infof("Added interface - %s", c.params.interfaceName)
+		clog.Infof("Added interface - %s", params.interfaceName)
 	}
 
-	if c.params.setupIptables {
-		c.iptables = utiliptables.New(utilexec.New(), dbus.New(), utiliptables.ProtocolIpv4)
+	if params.setupIptables {
+		iptables := utiliptables.New(utilexec.New(), dbus.New(), utiliptables.ProtocolIpv4)
 
-		for _, rule := range iptablesRules(c.params.localIPStr, c.params.localPort) {
-			exists, err := c.iptables.EnsureRule(utiliptables.Prepend, rule.table, rule.chain, rule.args...)
+		for _, rule := range iptablesRules(params.localIPStr, params.localPort) {
+			exists, err := iptables.EnsureRule(utiliptables.Prepend, rule.table, rule.chain, rule.args...)
 			switch {
 			case exists:
 				// debug messages can be printed by including "debug" plugin in coreFile.
@@ -166,10 +174,6 @@ func (c *cacheApp) ensureNetworkSetup() error {
 			case err == nil:
 				clog.Infof("Added nodelocaldns rule - %v", rule)
 				continue
-			// if we got here, either iptables check failed or adding rule back failed.
-			case isLockedErr(err):
-				setupErrCount.WithLabelValues("iptables_lock").Inc()
-				return fmt.Errorf("Error checking/adding iptables rule %v, due to xtables lock in use", rule)
 			default:
 				setupErrCount.WithLabelValues("iptables").Inc()
 				return fmt.Errorf("Error adding iptables rule %v - %s", rule, err)
@@ -181,31 +185,26 @@ func (c *cacheApp) ensureNetworkSetup() error {
 }
 
 func run() {
-	var cache = cacheApp{params: configParams{localPort: "53"}}
-
-	if cp, err := parseAndValidateFlags(); err != nil {
+	cp, err := parseAndValidateFlags()
+	if err != nil {
 		clog.Fatalf("Error parsing flags - %s, Exiting", err)
-	} else {
-		cache.params = *cp
 	}
 
-	cache.netifHandle = netif.NewNetifManager(cache.params.localIPs)
+	ifm := netif.NewNetifManager(cp.localIPs)
+	caddy.OnProcessExit = append(caddy.OnProcessExit, func() {teardownNetworking(ifm, cp)})
 
-	initMetrics(cache.params.metricsListenAddress)
+	initMetrics(cp.metricsListenAddress)
 
-	defer cache.teardownNetworking()
-
-	retries, maxSetupRetries, retryInterval := 0, 10, 500*time.Millisecond
-	err := cache.ensureNetworkSetup()
-	for err != nil && retries < maxSetupRetries {
+	retryInterval := 100*time.Millisecond
+	err = ensureNetworkSetup(ifm, cp)
+	for isLockedErr(err) {
 		clog.Errorf("Error setting up networking: %s - retrying...", err)
-		retries++
 		time.Sleep(retryInterval)
-		err = cache.ensureNetworkSetup()
+		err = ensureNetworkSetup(ifm, cp)
 	}
 
-	if retries == maxSetupRetries {
-		clog.Fatalf("Failed setting up networking after %d retries. Exiting", maxSetupRetries)
+	if err != nil {
+		clog.Fatalf("Error setting up networking - %s, Exiting", err)
 	}
 
 	coremain.Run()
