@@ -45,58 +45,6 @@ type iptablesRule struct {
 	args  []string
 }
 
-func iptablesRules(localIPStr, localPort string) []iptablesRule {
-	r := make([]iptablesRule, 0)
-	// using the localIPStr param since we need ip strings here
-	for _, localIP := range strings.Split(localIPStr, ",") {
-		r = append(r, []iptablesRule{
-			// Match traffic destined for localIp:localPort and set the flows to be NOTRACKED, this skips connection tracking
-			{utiliptables.Table("raw"), utiliptables.ChainPrerouting, []string{"-p", "tcp", "-d", localIP,
-				"--dport", localPort, "-j", "NOTRACK", "-w"}},
-			{utiliptables.Table("raw"), utiliptables.ChainPrerouting, []string{"-p", "udp", "-d", localIP,
-				"--dport", localPort, "-j", "NOTRACK", "-w"}},
-			// There are rules in filter table to allow tracked connections to be accepted. Since we skipped connection tracking,
-			// need these additional filter table rules.
-			{utiliptables.TableFilter, utiliptables.ChainInput, []string{"-p", "tcp", "-d", localIP,
-				"--dport", localPort, "-j", "ACCEPT", "-w"}},
-			{utiliptables.TableFilter, utiliptables.ChainInput, []string{"-p", "udp", "-d", localIP,
-				"--dport", localPort, "-j", "ACCEPT", "-w"}},
-			// Match traffic from localIp:localPort and set the flows to be NOTRACKED, this skips connection tracking
-			{utiliptables.Table("raw"), utiliptables.ChainOutput, []string{"-p", "tcp", "-s", localIP,
-				"--sport", localPort, "-j", "NOTRACK", "-w"}},
-			{utiliptables.Table("raw"), utiliptables.ChainOutput, []string{"-p", "udp", "-s", localIP,
-				"--sport", localPort, "-j", "NOTRACK", "-w"}},
-			// Additional filter table rules for traffic frpm localIp:localPort
-			{utiliptables.TableFilter, utiliptables.ChainOutput, []string{"-p", "tcp", "-s", localIP,
-				"--sport", localPort, "-j", "ACCEPT", "-w"}},
-			{utiliptables.TableFilter, utiliptables.ChainOutput, []string{"-p", "udp", "-s", localIP,
-				"--sport", localPort, "-j", "ACCEPT", "-w"}},
-		}...)
-	}
-
-	return r
-}
-
-func teardownNetworking(ifm *netif.NetifManager, config nodeCacheConfig) error {
-	clog.Infof("Tearing down")
-	if err := ifm.RemoveDummyDevice(config.interfaceName); err != nil {
-		clog.Infof("Failed removing interface %s", config.interfaceName)
-	}
-
-	if config.setupIptables {
-		iptables := utiliptables.New(utilexec.New(), dbus.New(), utiliptables.ProtocolIpv4)
-		for _, rule := range iptablesRules(config.localIPStr, config.localPort) {
-			clog.Infof("Deleting rule %+v\n", rule)
-
-			if err := iptables.DeleteRule(rule.table, rule.chain, rule.args...); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
 func parseAndValidateFlags() (nodeCacheConfig, error) {
 	var cp = nodeCacheConfig{}
 
@@ -132,6 +80,39 @@ func parseAndValidateFlags() (nodeCacheConfig, error) {
 	return cp, nil
 }
 
+
+func iptablesRules(localIPStr, localPort string) []iptablesRule {
+	r := make([]iptablesRule, 0)
+	// using the localIPStr param since we need ip strings here
+	for _, localIP := range strings.Split(localIPStr, ",") {
+		r = append(r, []iptablesRule{
+			// Match traffic destined for localIp:localPort and set the flows to be NOTRACKED, this skips connection tracking
+			{utiliptables.Table("raw"), utiliptables.ChainPrerouting, []string{"-p", "tcp", "-d", localIP,
+				"--dport", localPort, "-j", "NOTRACK", "-w"}},
+			{utiliptables.Table("raw"), utiliptables.ChainPrerouting, []string{"-p", "udp", "-d", localIP,
+				"--dport", localPort, "-j", "NOTRACK", "-w"}},
+			// There are rules in filter table to allow tracked connections to be accepted. Since we skipped connection tracking,
+			// need these additional filter table rules.
+			{utiliptables.TableFilter, utiliptables.ChainInput, []string{"-p", "tcp", "-d", localIP,
+				"--dport", localPort, "-j", "ACCEPT", "-w"}},
+			{utiliptables.TableFilter, utiliptables.ChainInput, []string{"-p", "udp", "-d", localIP,
+				"--dport", localPort, "-j", "ACCEPT", "-w"}},
+			// Match traffic from localIp:localPort and set the flows to be NOTRACKED, this skips connection tracking
+			{utiliptables.Table("raw"), utiliptables.ChainOutput, []string{"-p", "tcp", "-s", localIP,
+				"--sport", localPort, "-j", "NOTRACK", "-w"}},
+			{utiliptables.Table("raw"), utiliptables.ChainOutput, []string{"-p", "udp", "-s", localIP,
+				"--sport", localPort, "-j", "NOTRACK", "-w"}},
+			// Additional filter table rules for traffic frpm localIp:localPort
+			{utiliptables.TableFilter, utiliptables.ChainOutput, []string{"-p", "tcp", "-s", localIP,
+				"--sport", localPort, "-j", "ACCEPT", "-w"}},
+			{utiliptables.TableFilter, utiliptables.ChainOutput, []string{"-p", "udp", "-s", localIP,
+				"--sport", localPort, "-j", "ACCEPT", "-w"}},
+		}...)
+	}
+
+	return r
+}
+
 func ensureNetworkSetup(ifm *netif.NetifManager, config nodeCacheConfig) error {
 	exists, err := ifm.EnsureDummyDevice(config.interfaceName)
 	if err != nil {
@@ -160,6 +141,26 @@ func ensureNetworkSetup(ifm *netif.NetifManager, config nodeCacheConfig) error {
 			default:
 				setupErrCount.WithLabelValues("iptables").Inc()
 				return fmt.Errorf("Error adding iptables rule %v - %s", rule, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func teardownNetworking(ifm *netif.NetifManager, config nodeCacheConfig) error {
+	clog.Infof("Tearing down")
+	if err := ifm.RemoveDummyDevice(config.interfaceName); err != nil {
+		clog.Infof("Failed removing interface %s", config.interfaceName)
+	}
+
+	if config.setupIptables {
+		iptables := utiliptables.New(utilexec.New(), dbus.New(), utiliptables.ProtocolIpv4)
+		for _, rule := range iptablesRules(config.localIPStr, config.localPort) {
+			clog.Infof("Deleting rule %+v\n", rule)
+
+			if err := iptables.DeleteRule(rule.table, rule.chain, rule.args...); err != nil {
+				return err
 			}
 		}
 	}
