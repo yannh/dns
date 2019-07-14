@@ -176,7 +176,9 @@ func run() {
 	ifm := netif.NewNetifManager(cp.localIPs)
 	caddy.OnProcessExit = append(caddy.OnProcessExit, func() { teardownNetworking(ifm, cp) })
 
-	initMetrics(cp.metricsListenAddress)
+	if err = initMetrics(cp.metricsListenAddress); err != nil {
+		clog.Fatalf("Error setting up metrics handler - %s, Exiting", err)
+	}
 
 	if err = ensureNetworkSetup(ifm, cp); err != nil {
 		clog.Fatalf("Error setting up networking - %s, Exiting", err)

@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/coredns/coredns/plugin"
-	clog "github.com/coredns/coredns/plugin/pkg/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -19,12 +18,12 @@ var (
 	}, []string{"errortype"})
 )
 
-func initMetrics(ipport string) {
+func initMetrics(ipport string) error {
 	if err := serveMetrics(ipport); err != nil {
-		clog.Errorf("Failed to start metrics handler: %s", err)
-		return
+		return err
 	}
 	registerMetrics()
+	return nil
 }
 
 func registerMetrics() {
