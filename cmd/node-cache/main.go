@@ -51,35 +51,36 @@ type cacheApp struct {
 	netifHandle   *netif.NetifManager
 }
 
-func (c *cacheApp) initIptables() {
+func iptablesRules(localIPStr, localPort string) []iptablesRule{
+	r := make([]iptablesRule, 0)
 	// using the localIPStr param since we need ip strings here
-	for _, localIP := range strings.Split(c.params.localIPStr, ",") {
-		c.iptablesRules = append(c.iptablesRules, []iptablesRule{
+	for _, localIP := range strings.Split(localIPStr, ",") {
+		r = append(r, []iptablesRule{
 			// Match traffic destined for localIp:localPort and set the flows to be NOTRACKED, this skips connection tracking
 			{utiliptables.Table("raw"), utiliptables.ChainPrerouting, []string{"-p", "tcp", "-d", localIP,
-				"--dport", c.params.localPort, "-j", "NOTRACK"}},
+				"--dport", localPort, "-j", "NOTRACK"}},
 			{utiliptables.Table("raw"), utiliptables.ChainPrerouting, []string{"-p", "udp", "-d", localIP,
-				"--dport", c.params.localPort, "-j", "NOTRACK"}},
+				"--dport", localPort, "-j", "NOTRACK"}},
 			// There are rules in filter table to allow tracked connections to be accepted. Since we skipped connection tracking,
 			// need these additional filter table rules.
 			{utiliptables.TableFilter, utiliptables.ChainInput, []string{"-p", "tcp", "-d", localIP,
-				"--dport", c.params.localPort, "-j", "ACCEPT"}},
+				"--dport", localPort, "-j", "ACCEPT"}},
 			{utiliptables.TableFilter, utiliptables.ChainInput, []string{"-p", "udp", "-d", localIP,
-				"--dport", c.params.localPort, "-j", "ACCEPT"}},
+				"--dport", localPort, "-j", "ACCEPT"}},
 			// Match traffic from localIp:localPort and set the flows to be NOTRACKED, this skips connection tracking
 			{utiliptables.Table("raw"), utiliptables.ChainOutput, []string{"-p", "tcp", "-s", localIP,
-				"--sport", c.params.localPort, "-j", "NOTRACK"}},
+				"--sport", localPort, "-j", "NOTRACK"}},
 			{utiliptables.Table("raw"), utiliptables.ChainOutput, []string{"-p", "udp", "-s", localIP,
-				"--sport", c.params.localPort, "-j", "NOTRACK"}},
+				"--sport", localPort, "-j", "NOTRACK"}},
 			// Additional filter table rules for traffic frpm localIp:localPort
 			{utiliptables.TableFilter, utiliptables.ChainOutput, []string{"-p", "tcp", "-s", localIP,
-				"--sport", c.params.localPort, "-j", "ACCEPT"}},
+				"--sport", localPort, "-j", "ACCEPT"}},
 			{utiliptables.TableFilter, utiliptables.ChainOutput, []string{"-p", "udp", "-s", localIP,
-				"--sport", c.params.localPort, "-j", "ACCEPT"}},
+				"--sport", localPort, "-j", "ACCEPT"}},
 		}...)
 	}
 
-	c.iptables = utiliptables.New(utilexec.New(), dbus.New(), utiliptables.ProtocolIpv4)
+	return r
 }
 
 func (c *cacheApp) teardownNetworking() error {
@@ -151,7 +152,9 @@ func (c *cacheApp) ensureNetworkSetup() error {
 			return strings.Contains(err.Error(), "holding the xtables lock")
 		}
 
-		for _, rule := range c.iptablesRules {
+		c.iptables = utiliptables.New(utilexec.New(), dbus.New(), utiliptables.ProtocolIpv4)
+
+		for _, rule := range iptablesRules(c.params.localIPStr, c.params.localPort) {
 			exists, err := c.iptables.EnsureRule(utiliptables.Prepend, rule.table, rule.chain, rule.args...)
 			switch {
 			case exists:
@@ -159,7 +162,7 @@ func (c *cacheApp) ensureNetworkSetup() error {
 				clog.Debugf("iptables rule %v for nodelocaldns already exists", rule)
 				continue
 			case err == nil:
-				clog.Infof("Added back nodelocaldns rule - %v", rule)
+				clog.Infof("Added nodelocaldns rule - %v", rule)
 				continue
 			// if we got here, either iptables check failed or adding rule back failed.
 			case isLockedErr(err):
@@ -189,9 +192,6 @@ func real_main() {
 	}
 
 	cache.netifHandle = netif.NewNetifManager(cache.params.localIPs)
-	if cache.params.setupIptables {
-		cache.initIptables()
-	}
 
 	initMetrics(cache.params.metricsListenAddress)
 
