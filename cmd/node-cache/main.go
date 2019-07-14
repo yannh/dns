@@ -21,7 +21,7 @@ import (
 	_ "github.com/coredns/coredns/plugin/metrics"
 	clog "github.com/coredns/coredns/plugin/pkg/log"
 	_ "github.com/coredns/coredns/plugin/reload"
-	"k8s.io/dns/pkg/netif"
+	"github.com/yannh/dns/pkg/netif"
 	"k8s.io/kubernetes/pkg/util/dbus"
 	utilexec "k8s.io/kubernetes/pkg/util/exec"
 	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
@@ -35,7 +35,7 @@ type configParams struct {
 	metricsListenAddress string        // address to serve metrics on
 	interfaceName        string        // Name of the interface to be created
 	interval             time.Duration // specifies how often to run iptables rules check
-	setupIptables bool
+	setupIptables        bool
 }
 
 type iptablesRule struct {
@@ -51,7 +51,11 @@ type cacheApp struct {
 	netifHandle   *netif.NetifManager
 }
 
-func iptablesRules(localIPStr, localPort string) []iptablesRule{
+func isLockedErr(err error) bool {
+	return strings.Contains(err.Error(), "holding the xtables lock")
+}
+
+func iptablesRules(localIPStr, localPort string) []iptablesRule {
 	r := make([]iptablesRule, 0)
 	// using the localIPStr param since we need ip strings here
 	for _, localIP := range strings.Split(localIPStr, ",") {
@@ -91,8 +95,10 @@ func (c *cacheApp) teardownNetworking() error {
 
 	if c.params.setupIptables {
 		for _, rule := range c.iptablesRules {
-			if err := c.iptables.DeleteRule(rule.table, rule.chain, rule.args...); err != nil {
-				return err
+			err := c.iptables.DeleteRule(rule.table, rule.chain, rule.args...)
+			for isLockedErr(err) {
+				err = c.iptables.DeleteRule(rule.table, rule.chain, rule.args...)
+				time.Sleep(50 * time.Millisecond)
 			}
 		}
 	}
@@ -148,10 +154,6 @@ func (c *cacheApp) ensureNetworkSetup() error {
 	}
 
 	if c.params.setupIptables {
-		isLockedErr := func (err error) bool {
-			return strings.Contains(err.Error(), "holding the xtables lock")
-		}
-
 		c.iptables = utiliptables.New(utilexec.New(), dbus.New(), utiliptables.ProtocolIpv4)
 
 		for _, rule := range iptablesRules(c.params.localIPStr, c.params.localPort) {
@@ -166,13 +168,11 @@ func (c *cacheApp) ensureNetworkSetup() error {
 				continue
 			// if we got here, either iptables check failed or adding rule back failed.
 			case isLockedErr(err):
-				return fmt.Errorf("Error checking/adding iptables rule %v, due to xtables lock in use", rule)
 				setupErrCount.WithLabelValues("iptables_lock").Inc()
-				return err
+				return fmt.Errorf("Error checking/adding iptables rule %v, due to xtables lock in use", rule)
 			default:
-				clog.Errorf("Error adding iptables rule %v - %s", rule, err)
 				setupErrCount.WithLabelValues("iptables").Inc()
-				return err
+				return fmt.Errorf("Error adding iptables rule %v - %s", rule, err)
 			}
 		}
 	}
@@ -180,10 +180,8 @@ func (c *cacheApp) ensureNetworkSetup() error {
 	return nil
 }
 
-func real_main() {
+func run() {
 	var cache = cacheApp{params: configParams{localPort: "53"}}
-	defer cache.teardownNetworking()
-
 
 	if cp, err := parseAndValidateFlags(); err != nil {
 		clog.Fatalf("Error parsing flags - %s, Exiting", err)
@@ -195,13 +193,14 @@ func real_main() {
 
 	initMetrics(cache.params.metricsListenAddress)
 
-	retries := 0
-	maxSetupRetries := 5
+	defer cache.teardownNetworking()
+
+	retries, maxSetupRetries, retryInterval := 0, 10, 500*time.Millisecond
 	err := cache.ensureNetworkSetup()
 	for err != nil && retries < maxSetupRetries {
 		clog.Errorf("Error setting up networking: %s - retrying...", err)
 		retries++
-		time.Sleep(time.Second)
+		time.Sleep(retryInterval)
 		err = cache.ensureNetworkSetup()
 	}
 
@@ -213,5 +212,5 @@ func real_main() {
 }
 
 func main() {
-  real_main()
+	run()
 }
