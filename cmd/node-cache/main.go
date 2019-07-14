@@ -120,15 +120,15 @@ func parseAndValidateFlags() (configParams, error) {
 		cp.localIPs = append(cp.localIPs, newIP)
 	}
 
-	// lookup specified dns port
-	if f := flag.Lookup("dns.port"); f == nil {
-		cp.localPort = "53"
-	} else {
+	cp.localPort = "53"
+	if f := flag.Lookup("dns.port"); f != nil {
 		cp.localPort = f.Value.String()
 	}
+
 	if _, err := strconv.Atoi(cp.localPort); err != nil {
 		return cp, fmt.Errorf("Invalid port specified - %q", cp.localPort)
 	}
+
 	return cp, nil
 }
 
