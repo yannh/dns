@@ -29,7 +29,7 @@ import (
 )
 
 // configParams lists the configuration options that can be provided to dns-cache
-type configParams struct {
+type nodeCacheConfig struct {
 	localIPStr           string        // comma separated listen ips for the local cache agent
 	localIPs             []net.IP      // parsed ip addresses for the local cache agent to listen for dns requests
 	localPort            string        // port to listen for dns requests
@@ -77,15 +77,15 @@ func iptablesRules(localIPStr, localPort string) []iptablesRule {
 	return r
 }
 
-func teardownNetworking(ifm *netif.NetifManager, params configParams) error {
+func teardownNetworking(ifm *netif.NetifManager, config nodeCacheConfig) error {
 	clog.Infof("Tearing down")
-	if err := ifm.RemoveDummyDevice(params.interfaceName); err != nil {
-		clog.Infof("Failed removing interface %s", params.interfaceName)
+	if err := ifm.RemoveDummyDevice(config.interfaceName); err != nil {
+		clog.Infof("Failed removing interface %s", config.interfaceName)
 	}
 
-	if params.setupIptables {
+	if config.setupIptables {
 		iptables := utiliptables.New(utilexec.New(), dbus.New(), utiliptables.ProtocolIpv4)
-		for _, rule := range iptablesRules(params.localIPStr, params.localPort) {
+		for _, rule := range iptablesRules(config.localIPStr, config.localPort) {
 			clog.Infof("Deleting rule %+v\n", rule)
 
 			if err := iptables.DeleteRule(rule.table, rule.chain, rule.args...); err != nil {
@@ -97,8 +97,8 @@ func teardownNetworking(ifm *netif.NetifManager, params configParams) error {
 	return nil
 }
 
-func parseAndValidateFlags() (configParams, error) {
-	var cp = configParams{}
+func parseAndValidateFlags() (nodeCacheConfig, error) {
+	var cp = nodeCacheConfig{}
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
@@ -132,22 +132,22 @@ func parseAndValidateFlags() (configParams, error) {
 	return cp, nil
 }
 
-func ensureNetworkSetup(ifm *netif.NetifManager, params configParams) error {
-	exists, err := ifm.EnsureDummyDevice(params.interfaceName)
+func ensureNetworkSetup(ifm *netif.NetifManager, config nodeCacheConfig) error {
+	exists, err := ifm.EnsureDummyDevice(config.interfaceName)
 	if err != nil {
-		clog.Errorf("Error ensuring dummy interface %s is present - %s", params.interfaceName, err)
+		clog.Errorf("Error ensuring dummy interface %s is present - %s", config.interfaceName, err)
 		setupErrCount.WithLabelValues("interface_check").Inc()
 		return err
 	}
 
 	if !exists {
-		clog.Infof("Added interface - %s", params.interfaceName)
+		clog.Infof("Added interface - %s", config.interfaceName)
 	}
 
-	if params.setupIptables {
+	if config.setupIptables {
 		iptables := utiliptables.New(utilexec.New(), dbus.New(), utiliptables.ProtocolIpv4)
 
-		for _, rule := range iptablesRules(params.localIPStr, params.localPort) {
+		for _, rule := range iptablesRules(config.localIPStr, config.localPort) {
 			exists, err := iptables.EnsureRule(utiliptables.Prepend, rule.table, rule.chain, rule.args...)
 			switch {
 			case exists:
@@ -168,19 +168,19 @@ func ensureNetworkSetup(ifm *netif.NetifManager, params configParams) error {
 }
 
 func run() {
-	cp, err := parseAndValidateFlags()
+	config, err := parseAndValidateFlags()
 	if err != nil {
 		clog.Fatalf("Error parsing flags - %s, Exiting", err)
 	}
 
-	ifm := netif.NewNetifManager(cp.localIPs)
-	caddy.OnProcessExit = append(caddy.OnProcessExit, func() { teardownNetworking(ifm, cp) })
+	ifm := netif.NewNetifManager(config.localIPs)
+	caddy.OnProcessExit = append(caddy.OnProcessExit, func() { teardownNetworking(ifm, config) })
 
-	if err = initMetrics(cp.metricsListenAddress); err != nil {
+	if err = initMetrics(config.metricsListenAddress); err != nil {
 		clog.Fatalf("Error setting up metrics handler - %s, Exiting", err)
 	}
 
-	if err = ensureNetworkSetup(ifm, cp); err != nil {
+	if err = ensureNetworkSetup(ifm, config); err != nil {
 		clog.Fatalf("Error setting up networking - %s, Exiting", err)
 	}
 
