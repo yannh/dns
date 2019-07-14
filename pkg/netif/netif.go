@@ -28,7 +28,9 @@ func (m *NetifManager) EnsureDummyDevice(name string) (bool, error) {
 	if err == nil {
 		// found dummy device, make sure ip matches. AddrAdd will return error if address exists, will add it otherwise
 		for _, addr := range m.Addrs {
-			m.AddrAdd(l, addr)
+			if err := m.AddrAdd(l, addr); err != nil {
+				return false, err
+			}
 		}
 		return true, nil
 	}
