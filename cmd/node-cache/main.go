@@ -163,19 +163,21 @@ func ensureIptablesRulesPresent(rules []iptablesRule, ipt RuleEnsurer) error {
 	return nil
 }
 
-func teardownNetworking(ifm DummyDeviceRemover, rules []iptablesRule, config nodeCacheConfig, ipt RuleDeleter) error {
+func teardownInterface(ifm DummyDeviceRemover, config nodeCacheConfig) error {
 	clog.Infof("Tearing down")
 	if err := ifm.RemoveDummyDevice(config.interfaceName); err != nil {
 		clog.Infof("Failed removing interface %s", config.interfaceName)
+		return err
 	}
+	return nil
+}
 
-	if config.setupIptables {
-		for _, rule := range rules {
-			clog.Infof("Deleting rule %+v\n", rule)
+func cleanIptablesRules(rules []iptablesRule, ipt RuleDeleter) error {
+	for _, rule := range rules {
+		clog.Infof("Deleting rule %+v\n", rule)
 
-			if err := ipt.DeleteRule(rule.table, rule.chain, rule.args...); err != nil {
-				return err
-			}
+		if err := ipt.DeleteRule(rule.table, rule.chain, rule.args...); err != nil {
+			return err
 		}
 	}
 
@@ -192,7 +194,12 @@ func run() {
 	ipt := utiliptables.New(utilexec.New(), dbus.New(), utiliptables.ProtocolIpv4)
 	rules := iptablesRules(config.localIPStr, config.localPort)
 
-	caddy.OnProcessExit = append(caddy.OnProcessExit, func() { teardownNetworking(ifm, rules, config, ipt) })
+	caddy.OnProcessExit = append(caddy.OnProcessExit, func() {
+		teardownInterface(ifm, config)
+		if config.setupIptables {
+			cleanIptablesRules(rules, ipt)
+		}
+	})
 
 	if err = initMetrics(config.metricsListenAddress); err != nil {
 		clog.Fatalf("Error setting up metrics handler - %s, Exiting", err)
