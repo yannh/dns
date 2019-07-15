@@ -45,6 +45,14 @@ type iptablesRule struct {
 	args  []string
 }
 
+type DummyDeviceEnsurer interface {
+	EnsureDummyDevice(ifName string) (bool, error)
+}
+
+type DummyDeviceRemover interface {
+	RemoveDummyDevice(ifName string) error
+}
+
 func parseAndValidateFlags() (nodeCacheConfig, error) {
 	var cp = nodeCacheConfig{}
 
@@ -80,7 +88,6 @@ func parseAndValidateFlags() (nodeCacheConfig, error) {
 	return cp, nil
 }
 
-
 func iptablesRules(localIPStr, localPort string) []iptablesRule {
 	r := make([]iptablesRule, 0)
 	// using the localIPStr param since we need ip strings here
@@ -113,7 +120,7 @@ func iptablesRules(localIPStr, localPort string) []iptablesRule {
 	return r
 }
 
-func ensureNetworkSetup(ifm *netif.NetifManager, config nodeCacheConfig) error {
+func ensureNetworkSetup(ifm DummyDeviceEnsurer, config nodeCacheConfig, ipt utiliptables.Interface) error {
 	exists, err := ifm.EnsureDummyDevice(config.interfaceName)
 	if err != nil {
 		clog.Errorf("Error ensuring dummy interface %s is present - %s", config.interfaceName, err)
@@ -126,10 +133,8 @@ func ensureNetworkSetup(ifm *netif.NetifManager, config nodeCacheConfig) error {
 	}
 
 	if config.setupIptables {
-		iptables := utiliptables.New(utilexec.New(), dbus.New(), utiliptables.ProtocolIpv4)
-
 		for _, rule := range iptablesRules(config.localIPStr, config.localPort) {
-			exists, err := iptables.EnsureRule(utiliptables.Prepend, rule.table, rule.chain, rule.args...)
+			exists, err := ipt.EnsureRule(utiliptables.Prepend, rule.table, rule.chain, rule.args...)
 			switch {
 			case exists:
 				// debug messages can be printed by including "debug" plugin in coreFile.
@@ -148,18 +153,17 @@ func ensureNetworkSetup(ifm *netif.NetifManager, config nodeCacheConfig) error {
 	return nil
 }
 
-func teardownNetworking(ifm *netif.NetifManager, config nodeCacheConfig) error {
+func teardownNetworking(ifm DummyDeviceRemover, config nodeCacheConfig, ipt utiliptables.Interface) error {
 	clog.Infof("Tearing down")
 	if err := ifm.RemoveDummyDevice(config.interfaceName); err != nil {
 		clog.Infof("Failed removing interface %s", config.interfaceName)
 	}
 
 	if config.setupIptables {
-		iptables := utiliptables.New(utilexec.New(), dbus.New(), utiliptables.ProtocolIpv4)
 		for _, rule := range iptablesRules(config.localIPStr, config.localPort) {
 			clog.Infof("Deleting rule %+v\n", rule)
 
-			if err := iptables.DeleteRule(rule.table, rule.chain, rule.args...); err != nil {
+			if err := ipt.DeleteRule(rule.table, rule.chain, rule.args...); err != nil {
 				return err
 			}
 		}
@@ -175,13 +179,15 @@ func run() {
 	}
 
 	ifm := netif.NewNetifManager(config.localIPs)
-	caddy.OnProcessExit = append(caddy.OnProcessExit, func() { teardownNetworking(ifm, config) })
+	ipt := utiliptables.New(utilexec.New(), dbus.New(), utiliptables.ProtocolIpv4)
+
+	caddy.OnProcessExit = append(caddy.OnProcessExit, func() { teardownNetworking(ifm, config, ipt) })
 
 	if err = initMetrics(config.metricsListenAddress); err != nil {
 		clog.Fatalf("Error setting up metrics handler - %s, Exiting", err)
 	}
 
-	if err = ensureNetworkSetup(ifm, config); err != nil {
+	if err = ensureNetworkSetup(ifm, config, ipt); err != nil {
 		clog.Fatalf("Error setting up networking - %s, Exiting", err)
 	}
 
