@@ -53,6 +53,14 @@ type DummyDeviceRemover interface {
 	RemoveDummyDevice(ifName string) error
 }
 
+type RuleEnsurer interface {
+	EnsureRule(position utiliptables.RulePosition, table utiliptables.Table, chain utiliptables.Chain, args ...string) (bool, error)
+}
+
+type RuleDeleter interface {
+	DeleteRule(table utiliptables.Table, chain utiliptables.Chain, args ...string) error
+}
+
 func parseAndValidateFlags() (nodeCacheConfig, error) {
 	var cp = nodeCacheConfig{}
 
@@ -120,7 +128,7 @@ func iptablesRules(localIPStr, localPort string) []iptablesRule {
 	return r
 }
 
-func ensureNetworkSetup(ifm DummyDeviceEnsurer, rules []iptablesRule, config nodeCacheConfig, ipt utiliptables.Interface) error {
+func ensureNetworkSetup(ifm DummyDeviceEnsurer, rules []iptablesRule, config nodeCacheConfig, ipt RuleEnsurer) error {
 	exists, err := ifm.EnsureDummyDevice(config.interfaceName)
 	if err != nil {
 		clog.Errorf("Error ensuring dummy interface %s is present - %s", config.interfaceName, err)
@@ -153,7 +161,7 @@ func ensureNetworkSetup(ifm DummyDeviceEnsurer, rules []iptablesRule, config nod
 	return nil
 }
 
-func teardownNetworking(ifm DummyDeviceRemover, rules []iptablesRule, config nodeCacheConfig, ipt utiliptables.Interface) error {
+func teardownNetworking(ifm DummyDeviceRemover, rules []iptablesRule, config nodeCacheConfig, ipt RuleDeleter) error {
 	clog.Infof("Tearing down")
 	if err := ifm.RemoveDummyDevice(config.interfaceName); err != nil {
 		clog.Infof("Failed removing interface %s", config.interfaceName)
