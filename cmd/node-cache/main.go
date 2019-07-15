@@ -128,7 +128,7 @@ func iptablesRules(localIPStr, localPort string) []iptablesRule {
 	return r
 }
 
-func ensureNetworkSetup(ifm DummyDeviceEnsurer, rules []iptablesRule, config nodeCacheConfig, ipt RuleEnsurer) error {
+func ensureDummyInterfacePresent(ifm DummyDeviceEnsurer, config nodeCacheConfig) error {
 	exists, err := ifm.EnsureDummyDevice(config.interfaceName)
 	if err != nil {
 		clog.Errorf("Error ensuring dummy interface %s is present - %s", config.interfaceName, err)
@@ -139,22 +139,22 @@ func ensureNetworkSetup(ifm DummyDeviceEnsurer, rules []iptablesRule, config nod
 	if !exists {
 		clog.Infof("Added interface - %s", config.interfaceName)
 	}
+}
 
-	if config.setupIptables {
-		for _, rule := range rules {
-			exists, err := ipt.EnsureRule(utiliptables.Prepend, rule.table, rule.chain, rule.args...)
-			switch {
-			case exists:
-				// debug messages can be printed by including "debug" plugin in coreFile.
-				clog.Debugf("iptables rule %v for nodelocaldns already exists", rule)
-				continue
-			case err == nil:
-				clog.Infof("Added nodelocaldns rule - %v", rule)
-				continue
-			default:
-				setupErrCount.WithLabelValues("iptables").Inc()
-				return fmt.Errorf("Error adding iptables rule %v - %s", rule, err)
-			}
+func ensureIptablesRulesPresent(rules []iptablesRule, ipt RuleEnsurer) error {
+	for _, rule := range rules {
+		exists, err := ipt.EnsureRule(utiliptables.Prepend, rule.table, rule.chain, rule.args...)
+		switch {
+		case exists:
+			// debug messages can be printed by including "debug" plugin in coreFile.
+			clog.Debugf("iptables rule %v for nodelocaldns already exists", rule)
+			continue
+		case err == nil:
+			clog.Infof("Added nodelocaldns rule - %v", rule)
+			continue
+		default:
+			setupErrCount.WithLabelValues("iptables").Inc()
+			return fmt.Errorf("Error adding iptables rule %v - %s", rule, err)
 		}
 	}
 
@@ -196,8 +196,14 @@ func run() {
 		clog.Fatalf("Error setting up metrics handler - %s, Exiting", err)
 	}
 
-	if err = ensureNetworkSetup(ifm, rules, config, ipt); err != nil {
-		clog.Fatalf("Error setting up networking - %s, Exiting", err)
+	if err = ensureDummyInterfacePresent(ifm, config); err != nil {
+		clog.Fatalf("Error setting up dummy interface - %s, Exiting", err)
+	}
+
+	if config.setupIptables {
+		if err = ensureIptablesRulesPresent(rules, ipt); err != nil {
+			clog.Fatalf("Error setting up iptables rules - %s, Exiting", err)
+		}
 	}
 
 	coremain.Run()
