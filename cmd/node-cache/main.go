@@ -139,6 +139,8 @@ func ensureDummyInterfacePresent(ifm DummyDeviceEnsurer, ifName string) error {
 	if !exists {
 		clog.Infof("Added interface - %s", ifName)
 	}
+
+	return nil
 }
 
 func ensureIptablesRulesPresent(rules []iptablesRule, ipt RuleEnsurer) error {
