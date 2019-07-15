@@ -128,16 +128,16 @@ func iptablesRules(localIPStr, localPort string) []iptablesRule {
 	return r
 }
 
-func ensureDummyInterfacePresent(ifm DummyDeviceEnsurer, config nodeCacheConfig) error {
-	exists, err := ifm.EnsureDummyDevice(config.interfaceName)
+func ensureDummyInterfacePresent(ifm DummyDeviceEnsurer, ifName string) error {
+	exists, err := ifm.EnsureDummyDevice(ifName)
 	if err != nil {
-		clog.Errorf("Error ensuring dummy interface %s is present - %s", config.interfaceName, err)
+		clog.Errorf("Error ensuring dummy interface %s is present - %s", ifName, err)
 		setupErrCount.WithLabelValues("interface_check").Inc()
 		return err
 	}
 
 	if !exists {
-		clog.Infof("Added interface - %s", config.interfaceName)
+		clog.Infof("Added interface - %s", ifName)
 	}
 }
 
@@ -196,7 +196,7 @@ func run() {
 		clog.Fatalf("Error setting up metrics handler - %s, Exiting", err)
 	}
 
-	if err = ensureDummyInterfacePresent(ifm, config); err != nil {
+	if err = ensureDummyInterfacePresent(ifm, config.interfaceName); err != nil {
 		clog.Fatalf("Error setting up dummy interface - %s, Exiting", err)
 	}
 
