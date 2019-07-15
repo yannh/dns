@@ -120,7 +120,7 @@ func iptablesRules(localIPStr, localPort string) []iptablesRule {
 	return r
 }
 
-func ensureNetworkSetup(ifm DummyDeviceEnsurer, config nodeCacheConfig, ipt utiliptables.Interface) error {
+func ensureNetworkSetup(ifm DummyDeviceEnsurer, rules []iptablesRule, config nodeCacheConfig, ipt utiliptables.Interface) error {
 	exists, err := ifm.EnsureDummyDevice(config.interfaceName)
 	if err != nil {
 		clog.Errorf("Error ensuring dummy interface %s is present - %s", config.interfaceName, err)
@@ -133,7 +133,7 @@ func ensureNetworkSetup(ifm DummyDeviceEnsurer, config nodeCacheConfig, ipt util
 	}
 
 	if config.setupIptables {
-		for _, rule := range iptablesRules(config.localIPStr, config.localPort) {
+		for _, rule := range rules {
 			exists, err := ipt.EnsureRule(utiliptables.Prepend, rule.table, rule.chain, rule.args...)
 			switch {
 			case exists:
@@ -153,14 +153,14 @@ func ensureNetworkSetup(ifm DummyDeviceEnsurer, config nodeCacheConfig, ipt util
 	return nil
 }
 
-func teardownNetworking(ifm DummyDeviceRemover, config nodeCacheConfig, ipt utiliptables.Interface) error {
+func teardownNetworking(ifm DummyDeviceRemover, rules []iptablesRule, config nodeCacheConfig, ipt utiliptables.Interface) error {
 	clog.Infof("Tearing down")
 	if err := ifm.RemoveDummyDevice(config.interfaceName); err != nil {
 		clog.Infof("Failed removing interface %s", config.interfaceName)
 	}
 
 	if config.setupIptables {
-		for _, rule := range iptablesRules(config.localIPStr, config.localPort) {
+		for _, rule := range rules {
 			clog.Infof("Deleting rule %+v\n", rule)
 
 			if err := ipt.DeleteRule(rule.table, rule.chain, rule.args...); err != nil {
@@ -180,14 +180,15 @@ func run() {
 
 	ifm := netif.NewNetifManager(config.localIPs)
 	ipt := utiliptables.New(utilexec.New(), dbus.New(), utiliptables.ProtocolIpv4)
+	rules := iptablesRules(config.localIPStr, config.localPort)
 
-	caddy.OnProcessExit = append(caddy.OnProcessExit, func() { teardownNetworking(ifm, config, ipt) })
+	caddy.OnProcessExit = append(caddy.OnProcessExit, func() { teardownNetworking(ifm, rules, config, ipt) })
 
 	if err = initMetrics(config.metricsListenAddress); err != nil {
 		clog.Fatalf("Error setting up metrics handler - %s, Exiting", err)
 	}
 
-	if err = ensureNetworkSetup(ifm, config, ipt); err != nil {
+	if err = ensureNetworkSetup(ifm, rules, config, ipt); err != nil {
 		clog.Fatalf("Error setting up networking - %s, Exiting", err)
 	}
 
